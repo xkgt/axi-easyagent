@@ -14,10 +14,15 @@ from easyagent.util import build_tool
 class MaxToolCallError(Exception):
     """工具调用次数超过限制"""
     def __init__(self, memory: Memory):
-        """
-        :param memory: 可用来恢复记忆
-        """
-        self.memory = memory
+        self.memory = memory  # 可用来恢复记忆，但它保留了最后一次工具调用，如果要用，需要处理最后的记录
+
+    @property
+    def effective_memory(self) -> Memory:
+        """有效的记忆，不包括工具调用"""
+        m = self.memory.copy()
+        del m[-1]["tool_calls"]  # 因为错误来自于工具调用限制，所以一定会有tool_calls键
+        return m
+
 
 class ModelResponseError(Exception):
     """模型返回错误"""
@@ -98,6 +103,7 @@ class Agent:
                 yield content
         except MaxToolCallError as e:
             err = e
+            memory = e.effective_memory
         if self.complete_memory:
             self.memory.extend(memory[new_memory_index:])
         else:
@@ -116,7 +122,7 @@ class Agent:
             # 检查一下，如果不是sse协议就直接读取异常信息，否则下面就读不到了
             if "text/event-stream" not in event_source.response.headers.get("content-type", "").partition(";")[0]:
                 err = (await event_source.response.aread()).decode()
-                raise ModelResponseError(err, payload, err)
+                raise ModelResponseError(event_source.response, payload, err)
             async for event in event_source.aiter_sse():
                 if event.data == "[DONE]":
                     break
