@@ -72,11 +72,32 @@ class Agent:
         )
         self.model = model
         self.memory = memory if memory is not None else Memory()
-        self.tools = tools if tools is not None else []
         self.other_params = other_params if other_params is not None else {}
         self.complete_memory = complete_memory
         self.max_tool_call = max_tool_call
         self.prompt = prompt
+        # 工具部分
+        self._tool_registry: dict[str, Callable] = ... # 函数名与函数的映射，用于加快查找
+        self._tool_definitions: list[dict] = ...  # 工具的schema缓存，用于减少重复计算
+        self._tools: list[Callable | dict] = ...
+        self.tools = tools if tools is not None else []
+
+    @property
+    def tools(self) -> list[Callable | dict]:
+        return self._tools
+
+    @tools.setter
+    def tools(self, tools: list[Callable | dict]):
+        self._tools = tools
+        self._tool_definitions = []
+        self._tool_registry = {}
+        for func in tools:
+            if callable(func):
+                self._tool_registry[func.__name__] = func
+                self._tool_definitions.append(build_tool(func))
+            else:
+                self._tool_definitions.append(func)
+
 
     async def chat(self, message: str, *, tool_choice: str = "auto") -> AsyncGenerator[str, Any]:
         memory = self.memory.copy()
@@ -91,14 +112,13 @@ class Agent:
             "stream": True,
             **self.other_params
         }
-        tools = self.tools.copy()
-        if tools:
-            payload["tools"] = [build_tool(func) if isinstance(func, Callable) else func for func in tools]
+        if self._tool_definitions:
+            payload["tools"] = self._tool_definitions
             payload["tool_choice"] = tool_choice
         output = ""
         err = None
         try:
-            async for content in self._call(payload, memory, tools, self.max_tool_call, 0):
+            async for content in self._call(payload, memory, self._tool_registry, self.max_tool_call, 0):
                 output += content
                 yield content
         except MaxToolCallError as e:
@@ -113,7 +133,7 @@ class Agent:
             raise err
 
 
-    async def _call(self, payload, memory, tools, max_tool_call, current_tool_call) -> AsyncGenerator[str, Any]:
+    async def _call(self, payload, memory, tool_registry, max_tool_call, current_tool_call) -> AsyncGenerator[str, Any]:
         """调用Openai Api，并处理工具调用"""
         output = ""
         reasoning_output = ""
@@ -147,15 +167,14 @@ class Agent:
             if current_tool_call >= max_tool_call:
                 raise MaxToolCallError(memory)
             for tool_call in used_tools:
-                for function in tools:
-                    if function.__name__ == tool_call['function']['name']:
-                        args = json.loads(tool_call['function']['arguments'])
-                        if inspect.iscoroutinefunction(function):
-                            result = await function(**args)
-                        else:
-                            result = function(**args)
-                        memory.append({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
-            async for content in self._call(payload, memory, tools, max_tool_call, current_tool_call + 1):
+                function = tool_registry[tool_call['function']['name']]
+                args = json.loads(tool_call['function']['arguments'])
+                if inspect.iscoroutinefunction(function):
+                    result = await function(**args)
+                else:
+                    result = function(**args)
+                memory.append({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
+            async for content in self._call(payload, memory, tool_registry, max_tool_call, current_tool_call + 1):
                 yield content
         else:
             memory.append(record)
