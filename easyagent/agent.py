@@ -1,0 +1,155 @@
+import inspect
+import json
+import os
+from typing import Any, AsyncGenerator, Callable
+
+import httpx
+from httpx import Response
+from httpx_sse import aconnect_sse
+
+from easyagent.memory import Memory
+from easyagent.util import build_tool
+
+
+class MaxToolCallError(Exception):
+    """工具调用次数超过限制"""
+    def __init__(self, memory: Memory):
+        """
+        :param memory: 可用来恢复记忆
+        """
+        self.memory = memory
+
+class ModelResponseError(Exception):
+    """模型返回错误"""
+    def __init__(self, response: Response, payload: dict, message: str = ""):
+        super().__init__(message)
+        self.response = response
+        self.payload = payload
+        self.message = message
+
+
+class Agent:
+    """
+    一个聊天助手，支持工具调用和记忆
+    """
+    def __init__(
+            self,
+            model: str,
+            base_url: str | None = None,
+            api_key: str | None = None,
+            memory: Memory | None = None,
+            *,
+            prompt: str | None = None,
+            client: httpx.AsyncClient | None = None,
+            tools: list[Callable | dict] | None = None,
+            other_params: dict | None = None,
+            complete_memory: bool = True,
+            max_tool_call: int = 20
+    ):
+        """
+        :param model: 模型名称
+        :param base_url: OpenAI API 的基础 URL
+        :param api_key: OpenAI API 的密钥
+        :param memory: 记忆对象
+        :param prompt: 系统提示
+        :param client: HTTP 客户端
+        :param tools: 工具列表，可以是一个函数，会自动包装成工具，并自动调用，也可以是一个字典，用于定义模型内置工具
+        :param other_params: 请求中的json其他参数
+        :param complete_memory: 是否将工具调用、思考也保存进记忆
+        :param max_tool_call: 工具调用次数限制
+        """
+        self.client = client or httpx.AsyncClient(
+            base_url=base_url or os.environ["OPENAI_BASE_URL"],
+            headers={
+                "Authorization": f"Bearer {api_key or os.environ['OPENAI_API_KEY']}",
+            },
+            timeout=10
+        )
+        self.model = model
+        self.memory = memory if memory is not None else Memory()
+        self.tools = tools if tools is not None else []
+        self.other_params = other_params if other_params is not None else {}
+        self.complete_memory = complete_memory
+        self.max_tool_call = max_tool_call
+        self.prompt = prompt
+
+    async def chat(self, message: str, *, tool_choice: str = "auto") -> AsyncGenerator[str, Any]:
+        memory = self.memory.copy()
+        if self.prompt:
+            memory.insert(0, {'role': 'system', 'content': self.prompt})
+        memory.extend(self.memory)
+        new_memory_index = len(memory)
+        memory.add_user_message(message)
+        payload = {
+            "model": self.model,
+            "messages": memory,
+            "stream": True,
+            **self.other_params
+        }
+        tools = self.tools.copy()
+        if tools:
+            payload["tools"] = [build_tool(func) if isinstance(func, Callable) else func for func in tools]
+            payload["tool_choice"] = tool_choice
+        output = ""
+        err = None
+        try:
+            async for content in self._call(payload, memory, tools, self.max_tool_call, 0):
+                output += content
+                yield content
+        except MaxToolCallError as e:
+            err = e
+        if self.complete_memory:
+            self.memory.extend(memory[new_memory_index:])
+        else:
+            self.memory.add_user_message(message)
+            self.memory.add_assistant_message(output)
+        if err:
+            raise err
+
+
+    async def _call(self, payload, memory, tools, max_tool_call, current_tool_call) -> AsyncGenerator[str, Any]:
+        """调用Openai Api，并处理工具调用"""
+        output = ""
+        reasoning_output = ""
+        used_tools: list[dict] = []
+        async with aconnect_sse(self.client, "POST", f"/chat/completions", json=payload) as event_source:
+            # 检查一下，如果不是sse协议就直接读取异常信息，否则下面就读不到了
+            if "text/event-stream" not in event_source.response.headers.get("content-type", "").partition(";")[0]:
+                err = (await event_source.response.aread()).decode()
+                raise ModelResponseError(err, payload, err)
+            async for event in event_source.aiter_sse():
+                if event.data == "[DONE]":
+                    break
+                parse = json.loads(event.data)
+                delta = parse['choices'][0].get('delta', {})
+                if content := delta.get('content'):
+                    output += content
+                    yield content
+                elif reasoning_content := delta.get('reasoning_content'):
+                    reasoning_output += reasoning_content
+                elif tool_calls := delta.get('tool_calls'):
+                    for tool_call in tool_calls:
+                        if len(used_tools) < tool_call['index'] + 1:
+                            used_tools.append(tool_call)
+                        used_tools[tool_call['index']]['function']['arguments'] += tool_call['function']['arguments'] or ''
+        record = {"role": "assistant", "content": output}
+        if reasoning_output:
+            record["reasoning_content"] = reasoning_output
+        if used_tools:
+            record["tool_calls"] = used_tools
+            memory.append(record)
+            if current_tool_call >= max_tool_call:
+                raise MaxToolCallError(memory)
+            for tool_call in used_tools:
+                for function in tools:
+                    if function.__name__ == tool_call['function']['name']:
+                        args = json.loads(tool_call['function']['arguments'])
+                        if inspect.iscoroutinefunction(function):
+                            result = await function(**args)
+                        else:
+                            result = function(**args)
+                        memory.append({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
+            async for content in self._call(payload, memory, tools, max_tool_call, current_tool_call + 1):
+                yield content
+        else:
+            memory.append(record)
