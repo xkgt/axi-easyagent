@@ -21,6 +21,8 @@ class MaxToolCallError(Exception):
         """有效的记忆，不包括工具调用"""
         m = self.memory.copy()
         del m[-1]["tool_calls"]  # 因为错误来自于工具调用限制，所以一定会有tool_calls键
+        if "content" not in m[-1] and "reasoning_content" not in m[-1]:  # 如果没有内容，则删除整条记录
+            m.pop(-1)
         return m
 
 
@@ -103,7 +105,6 @@ class Agent:
         memory = self.memory.copy()
         if self.prompt:
             memory.insert(0, {'role': 'system', 'content': self.prompt})
-        memory.extend(self.memory)
         new_memory_index = len(memory)
         memory.add_user_message(message)
         payload = {
@@ -158,7 +159,9 @@ class Agent:
                         if len(used_tools) < tool_call['index'] + 1:
                             used_tools.append(tool_call)
                         used_tools[tool_call['index']]['function']['arguments'] += tool_call['function']['arguments'] or ''
-        record = {"role": "assistant", "content": output}
+        record = {"role": "assistant"}
+        if output:
+            record["content"] = output
         if reasoning_output:
             record["reasoning_content"] = reasoning_output
         if used_tools:
