@@ -30,7 +30,9 @@ class Memory(list[dict[str, Any]]):
             json.dump(self, f, ensure_ascii=False, indent=4)
 
     def copy(self) -> "Memory":
-        return type(self)(self)
+        m = type(self)(self)
+        m.max_length = self.max_length
+        return m
 
     def append(self, __object):
         super().append(__object)
