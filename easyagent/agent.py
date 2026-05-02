@@ -1,6 +1,8 @@
 import inspect
 import json
 import os
+from enum import Enum
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Callable
 
 import httpx
@@ -33,6 +35,38 @@ class ModelResponseError(Exception):
         self.response = response
         self.payload = payload
         self.message = message
+
+
+class StepType(Enum):
+    REASONING = "reasoning"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    CONTENT = "content"
+
+
+@dataclass
+class AgentEvent:
+    """
+    响应步骤
+    一般模型思考步骤如下
+    思考->工具调用->思考->输出->工具调用->输出
+    :ivar type: 步骤类型
+    :ivar reasoning: 思考内容
+    :ivar content: 输出内容
+    :ivar func: 调用的工具
+    :ivar args: 工具的参数，下一步必有tool_call_result或tool_call_error
+    :ivar error: 工具返回的错误
+    :ivar result: 工具的结果
+    """
+    type: StepType
+    # 核心内容
+    reasoning: str | None = None
+    content: str | None = None
+    # 工具相关
+    func: Callable | None = None
+    args: dict | None = None
+    result: Any | None = None
+    error: Exception | None = None
 
 
 class Agent:
@@ -100,8 +134,12 @@ class Agent:
             else:
                 self._tool_definitions.append(func)
 
-
     async def chat(self, message: str, *, tool_choice: str = "auto") -> AsyncGenerator[str, Any]:
+        async for step in self.execute(message, tool_choice=tool_choice):
+            if step.content:
+                yield step.content
+
+    async def execute(self, message: str, *, tool_choice: str = "auto", save_memory: bool = True) -> AsyncGenerator[AgentEvent, Any]:
         memory = self.memory.copy()
         if self.prompt:
             memory.insert(0, {'role': 'system', 'content': self.prompt})
@@ -119,22 +157,23 @@ class Agent:
         output = ""
         err = None
         try:
-            async for content in self._call(payload, memory, self._tool_registry, self.max_tool_call, 0):
-                output += content
-                yield content
+            async for step in self._call(payload, memory, self._tool_registry, self.max_tool_call, 0):
+                if step.content:
+                    output += step.content
+                yield step
         except MaxToolCallError as e:
             err = e
             memory = e.effective_memory
-        if self.complete_memory:
-            self.memory.extend(memory[new_memory_index:])
-        else:
-            self.memory.add_user_message(message)
-            self.memory.add_assistant_message(output)
+        if save_memory:
+            if self.complete_memory:
+                self.memory.extend(memory[new_memory_index:])
+            else:
+                self.memory.add_user_message(message)
+                self.memory.add_assistant_message(output)
         if err:
             raise err
 
-
-    async def _call(self, payload, memory, tool_registry, max_tool_call, current_tool_call) -> AsyncGenerator[str, Any]:
+    async def _call(self, payload, memory, tool_registry, max_tool_call, current_tool_call) -> AsyncGenerator[AgentEvent, Any]:
         """调用Openai Api，并处理工具调用"""
         output = ""
         reasoning_output = ""
@@ -149,16 +188,18 @@ class Agent:
                     break
                 parse = json.loads(event.data)
                 delta = parse['choices'][0].get('delta', {})
-                if content := delta.get('content'):
-                    output += content
-                    yield content
-                elif reasoning_content := delta.get('reasoning_content'):
+                if reasoning_content := delta.get('reasoning_content'):
                     reasoning_output += reasoning_content
+                    yield AgentEvent(StepType.REASONING, reasoning=reasoning_content)
+                elif content := delta.get('content'):
+                    output += content
+                    yield AgentEvent(StepType.CONTENT, content=content)
                 elif tool_calls := delta.get('tool_calls'):
                     for tool_call in tool_calls:
                         if len(used_tools) < tool_call['index'] + 1:
                             used_tools.append(tool_call)
-                        used_tools[tool_call['index']]['function']['arguments'] += tool_call['function']['arguments'] or ''
+                        else:
+                            used_tools[tool_call['index']]['function']['arguments'] += tool_call['function']['arguments'] or ''
         record = {"role": "assistant"}
         if output:
             record["content"] = output
@@ -172,12 +213,21 @@ class Agent:
             for tool_call in used_tools:
                 function = tool_registry[tool_call['function']['name']]
                 args = json.loads(tool_call['function']['arguments'])
-                if inspect.iscoroutinefunction(function):
-                    result = await function(**args)
+                yield AgentEvent(StepType.TOOL_CALL, func=function, args=args)
+                try:
+                    if inspect.iscoroutinefunction(function):
+                        result = await function(**args)
+                    else:
+                        result = function(**args)
+                    result = str(result)
+                except Exception as e:
+                    yield AgentEvent(StepType.TOOL_RESULT, func=function, args=args, error=e)
+                    result = f"Function {function.__name__} call failed: {e}"
                 else:
-                    result = function(**args)
+                    yield AgentEvent(StepType.TOOL_RESULT, func=function, args=args, result=result)
                 memory.append({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
-            async for content in self._call(payload, memory, tool_registry, max_tool_call, current_tool_call + 1):
-                yield content
+            # 递归调用
+            async for step in self._call(payload, memory, tool_registry, max_tool_call, current_tool_call + 1):
+                yield step
         else:
             memory.append(record)

@@ -2,22 +2,18 @@ import asyncio
 import os
 from typing import Annotated
 
-from easyagent import Agent, Memory
+from easyagent import Agent, Memory, AgentEvent, StepType
 
 
 async def get_weather(city: str) -> str:
     """获取天气，仅支持到城市，示例：上海
     如果天气特殊，建议再调用get_weather_detail获取详细信息"""
-    print(f"\n调用get_weather工具：{city}")
-    print("历史最强暴雨")
     return f"历史最强暴雨，市政府已责令所有户外工作暂停，请待在家里。"
 
 
 def get_weather_detail(city: Annotated[str, "可以精确到区，示例：上海/青浦区"]) -> str:
     """获取天气详情"""
-    print(f"\n调用get_weather_detail工具：{city}")
-    print("红色雷暴雨")
-    return f"红色雷暴雨"
+    return "红色雷暴雨"
 
 
 if os.path.exists("./memory.json"):
@@ -29,8 +25,27 @@ a = Agent(os.environ["MODEL"], memory=memory, tools=[get_weather, get_weather_de
 async def main():
     print("按q退出")
     while (msg := input("我：")) != "q":
-        async for output in a.chat(msg):
-            print(output, end="")
+        last_type = None
+        async for step in a.execute(msg):
+            if step.type == StepType.REASONING:
+                if last_type != StepType.REASONING:
+                    print()
+                    print("思考: ", end="")
+                print(step.reasoning, end="")
+            elif step.type == StepType.CONTENT:
+                if last_type != StepType.CONTENT:
+                    print()
+                    print("输出: ", end="")
+                print(step.content, end="")
+            elif step.type == StepType.TOOL_CALL:
+                print()
+                print(f"工具调用: {step.func.__name__}({step.args})", end="")
+            elif step.type == StepType.TOOL_RESULT:
+                if step.error:
+                    print(f" - 错误: {step.error}")
+                else:
+                    print(f" - 结果: {step.result}")
+            last_type = step.type
         print()
     memory.save("./memory.json")
 
