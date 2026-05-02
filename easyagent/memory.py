@@ -11,15 +11,6 @@ class Memory(list[dict[str, Any]]):
     def add_assistant_message(self, message: str):
         self.append({"role": "assistant", "content": message})
 
-    def add_message(self, message: str):
-        """添加消息，根据上一条消息的role决定添加到user还是assistant"""
-        if len(self) == 0:
-            self.add_user_message(message)
-        elif self[-1]["role"] != "assistant":
-            self.add_user_message(message)
-        else:
-            self.add_assistant_message(message)
-
     @classmethod
     def load(cls, json_file: str):
         with open(json_file, "r", encoding="utf-8") as f:
