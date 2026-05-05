@@ -170,6 +170,7 @@ class Agent:
             else:
                 self.memory.add_user_message(message)
                 self.memory.add_assistant_message(output)
+            self.memory.complete()
         if err:
             raise err
 

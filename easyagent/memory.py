@@ -38,3 +38,8 @@ class Memory(list[dict[str, Any]]):
         # 删除25%的记忆
         for i in range(len(self) // 4):
             self.pop(0)
+
+    def complete(self):
+        """一次对话完成后调用"""
+        if self.need_compress():
+            self.compress()
