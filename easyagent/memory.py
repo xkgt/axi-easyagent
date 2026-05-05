@@ -25,11 +25,6 @@ class Memory(list[dict[str, Any]]):
         m.max_length = self.max_length
         return m
 
-    def append(self, __object):
-        super().append(__object)
-        if self.need_compress():
-            self.compress()
-
     def need_compress(self) -> bool:
         return len(self) > self.max_length
 
