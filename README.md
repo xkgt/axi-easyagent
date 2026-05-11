@@ -80,11 +80,11 @@ from easyagent import Memory
 
 # Create new memory
 memory = Memory()
-memory.add_user_message("Hello!")
-memory.add_assistant_message("Hi! How can I help you?")
+memory.store_turn("Hello!", "Hi! How can I help you?")
 
 # Or load from file
 import os
+
 if os.path.exists("./memory.json"):
     memory = Memory.load("./memory.json")
 ```
@@ -92,7 +92,7 @@ if os.path.exists("./memory.json"):
 Memory features:
 - Automatically compresses when exceeding length limit (default: 70 messages)
 - Supports saving/loading JSON files
-- Can inherit and customize memory management
+- Can inherit and customize memory management via `IMemory` interface
 
 ### Step 2: Create Agent
 
@@ -125,7 +125,6 @@ agent = Agent(
     memory=memory,
     prompt="Keep responses brief",
     tools=[get_weather],
-    complete_memory=True,  # Save tool calls and thinking to memory
     max_tool_call=20  # Maximum tool call limit
 )
 ```
@@ -224,12 +223,11 @@ The core agent class responsible for managing conversations, tool calls, and mem
 - `model` (str): Model name
 - `base_url` (str, optional): API base URL
 - `api_key` (str, optional): API key
-- `memory` (Memory, optional): Memory instance
+- `memory` (IMemory, optional): Memory instance (defaults to Memory())
 - `prompt` (str, optional): System prompt
 - `client` (httpx.AsyncClient, optional): HTTP client
 - `tools` (list[Callable | dict], optional): Available tools list
 - `other_params` (dict, optional): Additional request parameters
-- `complete_memory` (bool): Whether to save tool call and thinking processes to memory (default: True)
 - `max_tool_call` (int): Maximum tool call limit (default: 20)
 
 **Main Methods:**
@@ -259,18 +257,21 @@ Enumeration of event types in the response process:
 
 ### Memory Class
 
-Conversation memory management class that inherits from list, supporting message CRUD operations and persistence. If you want to customize memory management, you can inherit from the `Memory` class and implement relevant methods.
+Conversation memory management class that inherits from list, supporting message CRUD operations and persistence. If you want to customize memory management, you can inherit from the `IMemory` interface and implement relevant methods.
 
 **Main Methods:**
-- `add_user_message(message)`: Add user message
-- `add_assistant_message(message)`: Add assistant message
-- `load(json_file)`: Load memory from JSON file
-- `save(json_file)`: Save memory to JSON file
+- `store_turn(user: str, assistant: str)`: Add a user-assistant message pair
+- `build_context(query: str, system: str)`: Build context for the model
+- `store(context: IContext)`: Store context messages into memory
 - `compress()`: Compress memory by removing reasoning content and tool call records
-- `copy()`: Create a copy of the memory
-- `need_compress()`: Check if memory needs compression
+- `save(file: str)`: Save memory to JSON file
+- `load(file: str)`: Load memory from JSON file (class method)
 
 ### Exception Classes
 
-- `MaxToolCallError`: Raised when the maximum tool call limit is exceeded. Contains the memory state for potential recovery.
+- `MaxToolCallError`: Raised when the maximum tool call limit is exceeded. Contains the context for potential recovery.
 - `ModelResponseError`: Raised when the model returns an invalid response. Contains the response, payload, and error message.
+
+### Utility Functions
+
+- `build_tool(func: Callable)`: Converts a Python function to OpenAI API tool format, automatically extracting function signature, type hints, and docstring.

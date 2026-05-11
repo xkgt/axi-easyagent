@@ -79,11 +79,11 @@ from easyagent import Memory
 
 # 创建新记忆
 memory = Memory()
-memory.add_user_message("你好！")
-memory.add_assistant_message("嗨！有什么可以帮助你的？")
+memory.store_turn("你好！", "嗨！有什么可以帮助你的？")
 
 # 或从文件加载
 import os
+
 if os.path.exists("./memory.json"):
     memory = Memory.load("./memory.json")
 ```
@@ -91,7 +91,7 @@ if os.path.exists("./memory.json"):
 记忆特性：
 - 超过长度限制时自动压缩（默认：70条消息）
 - 支持保存/加载JSON文件
-- 可继承自定义记忆管理
+- 可通过 `IMemory` 接口继承自定义记忆管理
 
 ### 步骤 2：创建助手
 
@@ -124,7 +124,6 @@ agent = Agent(
     memory=memory,
     prompt="说话尽量简短",
     tools=[get_weather],
-    complete_memory=True,  # 将工具调用和思考保存到记忆
     max_tool_call=20  # 最大工具调用次数限制
 )
 ```
@@ -223,12 +222,11 @@ if __name__ == "__main__":
 - `model` (str): 模型名称
 - `base_url` (str, optional): API基础URL
 - `api_key` (str, optional): API密钥
-- `memory` (Memory, optional): 记忆实例
+- `memory` (IMemory, optional): 记忆实例（默认为Memory()）
 - `prompt` (str, optional): 系统提示词
 - `client` (httpx.AsyncClient, optional): HTTP客户端
 - `tools` (list[Callable | dict], optional): 可用工具列表
 - `other_params` (dict, optional): 请求中的其他参数
-- `complete_memory` (bool): 是否将工具调用、思考也保存进记忆 (默认: True)
 - `max_tool_call` (int): 工具调用次数限制 (默认: 20)
 
 **主要方法：**
@@ -258,18 +256,21 @@ if __name__ == "__main__":
 
 ### Memory 类
 
-对话记忆管理类，继承自list，支持消息的增删改查和持久化。如果希望自定义记忆管理，可以继承 `Memory` 类并实现相关方法。
+对话记忆管理类，支持消息的增删改查和持久化。如果希望自定义记忆管理，可以继承 `IMemory` 接口并实现相关方法。
 
 **主要方法：**
-- `add_user_message(message)`: 添加用户消息
-- `add_assistant_message(message)`: 添加助手消息
-- `load(json_file)`: 从JSON文件加载记忆
-- `save(json_file)`: 保存记忆到JSON文件
+- `store_turn(user: str, assistant: str)`: 添加一轮用户和助手消息
+- `build_context(query: str, system: str)`: 为模型构建上下文
+- `store(context: IContext)`: 将上下文中的消息存储到记忆中
 - `compress()`: 压缩记忆，移除推理内容和工具调用记录
-- `copy()`: 创建记忆的副本
-- `need_compress()`: 检查记忆是否需要压缩
+- `save(file: str)`: 保存记忆到JSON文件
+- `load(file: str)`: 从JSON文件加载记忆（类方法）
 
 ### 异常类
 
-- `MaxToolCallError`: 当超过最大工具调用限制时抛出。包含可用于恢复的记忆状态。
+- `MaxToolCallError`: 当超过最大工具调用限制时抛出。包含可用于恢复的上下文。
 - `ModelResponseError`: 当模型返回无效响应时抛出。包含响应、载荷和错误信息。
+
+### 工具函数
+
+- `build_tool(func: Callable)`: 将Python函数转换为OpenAI API工具格式，自动提取函数签名、类型提示和文档字符串。
