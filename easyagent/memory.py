@@ -1,45 +1,70 @@
 import json
-from typing import Any
+
+from easyagent.interface import IMemory, IContext
 
 
-class Memory(list[dict[str, Any]]):
-    max_length = 70
+class Context(IContext):
+    def __init__(self, messages: list[dict]):
+        self.messages = messages
+        self.new_message_index = len(messages) - 1
 
-    def add_user_message(self, message: str):
-        self.append({"role": "user", "content": message})
+    def add_message(self, message: dict):
+        self.messages.append(message)
 
-    def add_assistant_message(self, message: str):
-        self.append({"role": "assistant", "content": message})
+    def get_messages(self) -> list[dict]:
+        return self.messages
 
-    @classmethod
-    def load(cls, json_file: str):
-        with open(json_file, "r", encoding="utf-8") as f:
-            return cls(json.load(f))
+    def get_new_messages(self) -> list[dict]:
+        return self.messages[self.new_message_index:]
 
-    def save(self, json_file: str):
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(self, f, ensure_ascii=False, indent=4)
 
-    def copy(self) -> "Memory":
-        m = type(self)(self)
-        m.max_length = self.max_length
-        return m
+class Memory(IMemory):
+    def __init__(self, messages: list[dict] = None, max_length: int = 70):
+        self.messages = messages if messages is not None else []
+        self.max_length = max_length
 
-    def need_compress(self) -> bool:
-        return len(self) > self.max_length
+    def store_turn(self, user: str, assistant: str):
+        """存储一轮对话"""
+        self.messages.append({"role": "user", "content": user})
+        self.messages.append({"role": "assistant", "content": assistant})
+
+    def build_context(self, query: str, system: str) -> IContext:
+        """根据query和system构建Context，会包含需要的记忆"""
+        messages = [{"role": "system", "content": system}]
+        messages.extend(self.messages)
+        messages.append({"role": "user", "content": query})
+        return Context(messages)
+
+    def store(self, context: IContext):
+        """对话结束时调用，提炼Context中的内容，保存进记忆中"""
+        self.messages.extend(context.get_new_messages())
+        if len(self.messages) > self.max_length:
+            self.compress()
 
     def compress(self):
-        # 剔除前50%的记忆中的深度思考记录，工具调用记录
-        for index, record in enumerate(self.copy()):
+        """压缩记忆"""
+        # 1 删除前50%的工具调用和思维链
+        # 2 删除15%的记忆
+        length = len(self.messages)
+        for index, record in enumerate(self.messages.copy()):
+            # 只有assistant会存在工具调用和思维链，删除了工具调用请求后
+            # 对应的工具调用记录也需要删除
+            if index < length // 2:
+                continue
             if record['role'] == "assistant":
-                record.pop("reasoning_content")
+                record.pop("reasoning_content", None)
+                record.pop("tool_calls", None)
             elif record['role'] == 'tool':
-                self.remove(record)
-        # 删除25%的记忆
-        for i in range(len(self) // 4):
-            self.pop(0)
+                self.messages.remove(record)
+        # 删除15%的记忆
 
-    def complete(self):
-        """一次对话完成后调用"""
-        if self.need_compress():
-            self.compress()
+
+    def save(self, file: str):
+        with open(file, "w", encoding="utf-8") as f:
+            json.dump({"messages": self.messages, "max_length": self.max_length}, f, ensure_ascii=False, indent=4)
+
+    @classmethod
+    def load(cls, file: str):
+        with open(file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return cls(data["messages"], data["max_length"])

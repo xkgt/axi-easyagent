@@ -2,7 +2,7 @@ import asyncio
 import os
 from typing import Annotated
 
-from easyagent import Agent, Memory, AgentEvent, StepType
+from easyagent import Agent, Memory, StepType
 
 
 async def get_weather(city: str) -> str:

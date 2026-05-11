@@ -1,31 +1,23 @@
 import inspect
 import json
 import os
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, AsyncGenerator, Callable
 
 import httpx
 from httpx import Response
 from httpx_sse import aconnect_sse
 
+from easyagent.interface import IMemory, IContext
 from easyagent.memory import Memory
 from easyagent.util import build_tool
 
 
 class MaxToolCallError(Exception):
     """工具调用次数超过限制"""
-    def __init__(self, memory: Memory):
-        self.memory = memory  # 可用来恢复记忆，但它保留了最后一次工具调用，如果要用，需要处理最后的记录
-
-    @property
-    def effective_memory(self) -> Memory:
-        """有效的记忆，不包括工具调用"""
-        m = self.memory.copy()
-        del m[-1]["tool_calls"]  # 因为错误来自于工具调用限制，所以一定会有tool_calls键
-        if "content" not in m[-1] and "reasoning_content" not in m[-1]:  # 如果没有内容，则删除整条记录
-            m.pop(-1)
-        return m
+    def __init__(self, context: IContext):
+        self.context = context  # 可用来恢复记忆，但它保留了最后一次工具调用，如果要用，需要处理最后的记录
 
 
 class ModelResponseError(Exception):
@@ -78,13 +70,12 @@ class Agent:
             model: str,
             base_url: str | None = None,
             api_key: str | None = None,
-            memory: Memory | None = None,
+            memory: IMemory | None = None,
             *,
             prompt: str | None = None,
             client: httpx.AsyncClient | None = None,
             tools: list[Callable | dict] | None = None,
             other_params: dict | None = None,
-            complete_memory: bool = True,
             max_tool_call: int = 20
     ):
         """
@@ -96,7 +87,6 @@ class Agent:
         :param client: HTTP 客户端
         :param tools: 工具列表，可以是一个函数，会自动包装成工具，并自动调用，也可以是一个字典，用于定义模型内置工具
         :param other_params: 请求中的json其他参数
-        :param complete_memory: 是否将工具调用、思考也保存进记忆
         :param max_tool_call: 工具调用次数限制
         """
         self.client = client or httpx.AsyncClient(
@@ -109,7 +99,6 @@ class Agent:
         self.model = model
         self.memory = memory if memory is not None else Memory()
         self.other_params = other_params if other_params is not None else {}
-        self.complete_memory = complete_memory
         self.max_tool_call = max_tool_call
         self.prompt = prompt
         # 工具部分
@@ -140,14 +129,9 @@ class Agent:
                 yield step.content
 
     async def execute(self, message: str, *, tool_choice: str = "auto", save_memory: bool = True) -> AsyncGenerator[AgentEvent, Any]:
-        memory = self.memory.copy()
-        if self.prompt:
-            memory.insert(0, {'role': 'system', 'content': self.prompt})
-        new_memory_index = len(memory)
-        memory.add_user_message(message)
+        context = self.memory.build_context(message, self.prompt)
         payload = {
             "model": self.model,
-            "messages": memory,
             "stream": True,
             **self.other_params
         }
@@ -155,30 +139,20 @@ class Agent:
             payload["tools"] = self._tool_definitions
             payload["tool_choice"] = tool_choice
         output = ""
-        err = None
-        try:
-            async for step in self._call(payload, memory, self._tool_registry, self.max_tool_call, 0):
-                if step.content:
-                    output += step.content
-                yield step
-        except MaxToolCallError as e:
-            err = e
-            memory = e.effective_memory
+        async for step in self._call(payload, context, self._tool_registry, self.max_tool_call, 0):
+            if step.content:
+                output += step.content
+            yield step
         if save_memory:
-            if self.complete_memory:
-                self.memory.extend(memory[new_memory_index:])
-            else:
-                self.memory.add_user_message(message)
-                self.memory.add_assistant_message(output)
-            self.memory.complete()
-        if err:
-            raise err
+            self.memory.store(context)
 
-    async def _call(self, payload, memory, tool_registry, max_tool_call, current_tool_call) -> AsyncGenerator[AgentEvent, Any]:
+
+    async def _call(self, payload, context, tool_registry, max_tool_call, current_tool_call) -> AsyncGenerator[AgentEvent, Any]:
         """调用Openai Api，并处理工具调用"""
         output = ""
         reasoning_output = ""
         used_tools: list[dict] = []
+        payload["messages"] = context.get_messages()
         async with aconnect_sse(self.client, "POST", f"/chat/completions", json=payload) as event_source:
             # 检查一下，如果不是sse协议就直接读取异常信息，否则下面就读不到了
             if "text/event-stream" not in event_source.response.headers.get("content-type", "").partition(";")[0]:
@@ -188,6 +162,8 @@ class Agent:
                 if event.data == "[DONE]":
                     break
                 parse = json.loads(event.data)
+                if not parse['choices']:
+                    continue
                 delta = parse['choices'][0].get('delta', {})
                 if reasoning_content := delta.get('reasoning_content'):
                     reasoning_output += reasoning_content
@@ -208,9 +184,9 @@ class Agent:
             record["reasoning_content"] = reasoning_output
         if used_tools:
             record["tool_calls"] = used_tools
-            memory.append(record)
+            context.add_message(record)
             if current_tool_call >= max_tool_call:
-                raise MaxToolCallError(memory)
+                raise MaxToolCallError(context)
             for tool_call in used_tools:
                 function = tool_registry[tool_call['function']['name']]
                 args = json.loads(tool_call['function']['arguments'])
@@ -226,9 +202,9 @@ class Agent:
                     result = f"Function {function.__name__} call failed: {e}"
                 else:
                     yield AgentEvent(StepType.TOOL_RESULT, func=function, args=args, result=result)
-                memory.append({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
+                context.add_message({'role': 'tool', 'tool_call_id': tool_call['id'], 'content': result})
             # 递归调用
-            async for step in self._call(payload, memory, tool_registry, max_tool_call, current_tool_call + 1):
+            async for step in self._call(payload, context, tool_registry, max_tool_call, current_tool_call + 1):
                 yield step
         else:
-            memory.append(record)
+            context.add_message(record)
