@@ -1,5 +1,5 @@
 import inspect
-from typing import get_type_hints, Callable
+from typing import get_type_hints, get_origin, Callable
 
 
 def build_tool(func: Callable):
@@ -59,6 +59,9 @@ def build_tool(func: Callable):
 
 def _python_type_to_json_type(python_type):
     """将 Python 类型转换为 JSON Schema 类型"""
+    origin = get_origin(python_type)
+    if origin is not None:
+        python_type = origin
     if python_type is str:
         return "string"
     elif python_type is int:

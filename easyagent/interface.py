@@ -10,7 +10,7 @@ class IContext:
 
 
 class IMemory:
-    def build_context(self, query: str, system: str) -> IContext:
+    def build_context(self, query: str, system: str | None = None) -> IContext:
         """根据query和system构建Context，会包含需要的记忆"""
         ...
 
@@ -22,5 +22,5 @@ class IMemory:
         ...
 
     @classmethod
-    def load(cls, file: str):
+    def load(cls, file: str) -> 'IMemory':
         ...

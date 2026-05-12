@@ -102,9 +102,9 @@ class Agent:
         self.max_tool_call = max_tool_call
         self.prompt = prompt
         # 工具部分
-        self._tool_registry: dict[str, Callable] = ... # 函数名与函数的映射，用于加快查找
-        self._tool_definitions: list[dict] = ...  # 工具的schema缓存，用于减少重复计算
-        self._tools: list[Callable | dict] = ...
+        self._tool_registry: dict[str, Callable] # 函数名与函数的映射，用于加快查找
+        self._tool_definitions: list[dict]  # 工具的schema缓存，用于减少重复计算
+        self._tools: list[Callable | dict]
         self.tools = tools if tools is not None else []
 
     @property
@@ -138,10 +138,7 @@ class Agent:
         if self._tool_definitions:
             payload["tools"] = self._tool_definitions
             payload["tool_choice"] = tool_choice
-        output = ""
         async for step in self._call(payload, context, self._tool_registry, self.max_tool_call, 0):
-            if step.content:
-                output += step.content
             yield step
         if save_memory:
             self.memory.store(context)
@@ -177,7 +174,7 @@ class Agent:
                             used_tools.append(tool_call)
                         else:
                             used_tools[tool_call['index']]['function']['arguments'] += tool_call['function']['arguments'] or ''
-        record = {"role": "assistant"}
+        record: dict[str, Any] = {"role": "assistant"}
         if output:
             record["content"] = output
         if reasoning_output:
@@ -208,3 +205,6 @@ class Agent:
                 yield step
         else:
             context.add_message(record)
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.client.aclose()
