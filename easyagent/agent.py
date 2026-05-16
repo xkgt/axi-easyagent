@@ -80,20 +80,23 @@ class Agent:
     ):
         """
         :param model: 模型名称
-        :param base_url: OpenAI API 的基础 URL
-        :param api_key: OpenAI API 的密钥
+        :param base_url: OpenAI API 的基础 URL，如果为空则从环境变量中获取OPENAI_BASE_URL
+        :param api_key: OpenAI API 的密钥，如果为空则从环境变量中获取OPENAI_API_KEY，值可空
         :param memory: 记忆对象
         :param prompt: 系统提示
-        :param client: HTTP 客户端
+        :param client: HTTP 客户端，需要提前将base_url和headers设置好
         :param tools: 工具列表，可以是一个函数，会自动包装成工具，并自动调用，也可以是一个字典，用于定义模型内置工具
         :param other_params: 请求中的json其他参数
         :param max_tool_call: 工具调用次数限制
         """
+        api_key = api_key or os.getenv('OPENAI_API_KEY', '')
+        if api_key:
+            headers = {"Authorization": f"Bearer {api_key}"}
+        else:
+            headers = {}
         self.client = client or httpx.AsyncClient(
             base_url=base_url or os.environ["OPENAI_BASE_URL"],
-            headers={
-                "Authorization": f"Bearer {api_key or os.environ['OPENAI_API_KEY']}",
-            },
+            headers=headers,
             timeout=10
         )
         self.model = model
@@ -205,6 +208,9 @@ class Agent:
                 yield step
         else:
             context.add_message(record)
+
+    async def __aenter__(self):
+        return self
 
     async def __aexit__(self, exc_type, exc, tb):
         await self.client.aclose()
