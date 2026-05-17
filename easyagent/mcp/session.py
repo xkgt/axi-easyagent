@@ -57,7 +57,7 @@ class MCPSession:
             def create_tool(_schema):
                 async def e(**kwargs):
                     return (await self.post("tools/call", {"name": _schema["name"], "arguments": kwargs}))["content"]
-                func = wrap_function(e, schema["name"], schema["description"], schema["inputSchema"])
+                func = wrap_function(e, _schema["name"], _schema["description"], _schema["inputSchema"])
                 return func
 
             func = create_tool(schema)
@@ -88,8 +88,12 @@ class MCPSession:
 
     async def __aenter__(self):
         await self.transport.__aenter__()
-        await self._protocol_init()
-        return self
+        try:
+            await self._protocol_init()
+            return self
+        except Exception as e:
+            await self.transport.__aexit__(None, None, None)
+            raise e
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.transport.__aexit__(exc_type, exc_val, exc_tb)
