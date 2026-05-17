@@ -2,14 +2,13 @@
 
 [中文文档](README_CN.md) | [English Documentation](README.md)
 
-A lightweight Python AI agent framework with conversation management, tool calling, and memory persistence capabilities.
+A lightweight and simple Python AI agent framework — turn your Python functions into AI tools, connect MCP servers with zero friction, and manage conversations with built-in memory.
 
 How lightweight is it?
 
 ![001.png](001.png)
 
 ## Why Axi-EasyAgent?
-
 Do you know how much space a typical AI library takes nowadays? Up to 200MB! That's larger than a web browser!  
 If you only want AI to call your functions, how much of that 200MB do you actually need? The answer is right here.
 
@@ -17,6 +16,7 @@ If you only want AI to call your functions, how much of that 200MB do you actual
 
 - 🤖 **Smart Conversations**: Streaming conversation support based on OpenAI-compatible APIs
 - 🔧 **Tool Calling**: Automatically convert Python functions into AI-callable tools
+- 🔌 **MCP Integration**: Seamless MCP server connection — tools from MCP servers become callables just like your own functions
 - 💾 **Memory Management**: Built-in conversation memory system with persistent storage and auto-compression
 - ⚡ **Async Processing**: Full async programming support for improved response efficiency
 - 🔄 **Streaming Output**: Real-time streaming responses for enhanced user experience
@@ -213,6 +213,66 @@ Advantages:
 - Handle errors gracefully
 - Suitable for complex scenarios requiring detailed control
 
+## MCP Integration
+
+Axi-EasyAgent provides first-class MCP (Model Context Protocol) support. You can connect to any MCP server via SSE, Stdio, or Streamable HTTP — and its tools become regular Python functions you can call directly or pass to the Agent.
+
+### Quick Example
+
+```python
+import asyncio
+from easyagent import Agent, MCPSession
+
+async def main():
+    # Connect to an MCP server via stdio (e.g., a filesystem server)
+    async with MCPSession.stdio("npx -y @modelcontextprotocol/server-filesystem .") as session:
+        # list_tools() returns a list of callable functions — just like your own!
+        tools = await session.list_tools()
+        
+        # Each tool is a real Python function with proper signature, docstring, and type hints
+        print(tools[0].__name__)          # e.g. "read_file"
+        print(tools[0].__doc__)           # tool description from the MCP server
+        
+        # You can call them directly like any function
+        content = await tools[0](path="README.md")
+        print(content)
+        
+        # Or pass them to an Agent — exactly like your own functions
+        agent = Agent("deepseek-v4-flash", tools=tools)
+        async for output in agent.chat("What's in the README?"):
+            print(output, end="")
+
+asyncio.run(main())
+```
+
+### Mixing MCP Tools with Your Own Functions
+
+MCP tools and your own Python functions are treated exactly the same — you can mix them freely:
+
+```python
+async def get_weather(city: str) -> str:
+    """Get weather for a city"""
+    return f"{city}: sunny, 25°C"
+
+async with (
+    MCPSession.stdio("npx -y @modelcontextprotocol/server-filesystem .") as fs,
+    MCPSession.sse("http://localhost:8000/mcp/sse") as custom_server,
+):
+    # Mix local functions and MCP tools seamlessly
+    all_tools = [get_weather] + await fs.list_tools() + await custom_server.list_tools()
+    agent = Agent("deepseek-v4-flash", tools=all_tools)
+```
+
+### Supported Transport Types
+
+| Transport | Factory Method | Use Case |
+|-----------|---------------|----------|
+| **Stdio** | `MCPSession.stdio(cmd)` | Local MCP servers launched as subprocesses |
+| **SSE** | `MCPSession.sse(url)` | Remote MCP servers with Server-Sent Events |
+| **Streamable HTTP** | `MCPSession.streamable_http(url)` | Remote MCP servers with HTTP streaming |
+
+> **Key insight**: `MCPSession.list_tools()` introspects the MCP server's tool schemas and dynamically builds Python functions with proper `__name__`, `__doc__`, and `__input_schema__`. When you pass them to `Agent`, they work exactly like the functions you wrote by hand. No boilerplate, no manual schema wrangling.
+
 ## Core Components
 
 ### Agent Class
@@ -266,6 +326,30 @@ Conversation memory management class that inherits from list, supporting message
 - `compress()`: Compress memory by removing reasoning content and tool call records
 - `save(file: str)`: Save memory to JSON file
 - `load(file: str)`: Load memory from JSON file (class method)
+
+### MCPSession Class
+
+The MCP session manager that connects to MCP servers and exposes their tools as Python functions.
+
+**Factory Methods:**
+- `MCPSession.stdio(cmd: str)`: Connect via subprocess stdio
+- `MCPSession.sse(sse_url: str, client: AsyncClient | None = None)`: Connect via SSE
+- `MCPSession.streamable_http(url: str, client: AsyncClient | None = None)`: Connect via Streamable HTTP
+
+**Main Methods:**
+- `list_tools() -> list[Callable[..., Awaitable]]`: Fetch the MCP server's tool list and return them as callable async functions. Each function has proper `__name__`, `__doc__`, and input schema — ready to pass directly to `Agent(tools=...)`.
+
+**Supports async context manager:**
+```python
+async with MCPSession.stdio("some-command") as session:
+    tools = await session.list_tools()
+```
+
+### Transport Classes
+
+- `SSETransport(sse_url, client)`: SSE-based transport for MCP servers
+- `StdioTransport(cmd)`: Subprocess stdio-based transport for local MCP servers
+- `StreamableHttpTransport(url, client)`: HTTP streaming transport for remote MCP servers
 
 ### Exception Classes
 

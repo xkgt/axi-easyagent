@@ -2,9 +2,9 @@
 
 [中文文档](README_CN.md) | [English Documentation](README.md)
 
-一个轻量的Python AI智能体框架，支持对话管理、工具调用和记忆持久化功能。
+一个轻量、简洁的 Python AI 智能体框架 — 将 Python 函数一键变成 AI 工具，零摩擦连接 MCP 服务，内置对话记忆管理。
 
-轻量到什么长度？  
+轻量到什么程度？
 
 ![001.png](001.png)
 
@@ -16,6 +16,7 @@
 
 - 🤖 **智能对话**：基于OpenAI兼容API的流式对话支持
 - 🔧 **工具调用**：自动将Python函数转换为AI可调用的工具
+- 🔌 **MCP 集成**：无缝连接 MCP 服务 — MCP 服务的工具会变成和你自己写的函数一样的可调用对象
 - 💾 **记忆管理**：内置对话记忆系统，支持持久化存储和自动压缩
 - ⚡ **异步处理**：全面支持异步编程，提高响应效率
 - 🔄 **流式输出**：实时流式响应，提升用户体验
@@ -212,6 +213,66 @@ if __name__ == "__main__":
 - 优雅处理错误
 - 适合需要精细控制的复杂场景
 
+## MCP 集成
+
+Axi-EasyAgent 提供了一流的 MCP（模型上下文协议）支持。你可以通过 SSE、Stdio 或 Streamable HTTP 连接任何 MCP 服务 — 其工具会变成普通的 Python 函数，可以直接调用或传给 Agent 使用。
+
+### 快速示例
+
+```python
+import asyncio
+from easyagent import Agent, MCPSession
+
+async def main():
+    # 通过 stdio 连接 MCP 服务（例如文件系统服务）
+    async with MCPSession.stdio("npx -y @modelcontextprotocol/server-filesystem .") as session:
+        # list_tools() 返回可调用函数列表 — 就像你自己写的一样！
+        tools = await session.list_tools()
+        
+        # 每个工具都是真正的 Python 函数，有正确的签名、文档字符串和类型提示
+        print(tools[0].__name__)          # 例如 "read_file"
+        print(tools[0].__doc__)           # MCP 服务提供的工具描述
+        
+        # 你可以像普通函数一样直接调用
+        content = await tools[0](path="README.md")
+        print(content)
+        
+        # 或者传给 Agent — 和自己写的函数完全一样
+        agent = Agent("deepseek-v4-flash", tools=tools)
+        async for output in agent.chat("README里写了什么？"):
+            print(output, end="")
+
+asyncio.run(main())
+```
+
+### 混合使用 MCP 工具和自己的函数
+
+MCP 工具和你自己的 Python 函数被完全同等对待 — 你可以自由混用：
+
+```python
+async def get_weather(city: str) -> str:
+    """获取城市天气"""
+    return f"{city}：晴天，25°C"
+
+async with (
+    MCPSession.stdio("npx -y @modelcontextprotocol/server-filesystem .") as fs,
+    MCPSession.sse("http://localhost:8000/mcp/sse") as custom_server,
+):
+    # 无缝混用本地函数和 MCP 工具
+    all_tools = [get_weather] + await fs.list_tools() + await custom_server.list_tools()
+    agent = Agent("deepseek-v4-flash", tools=all_tools)
+```
+
+### 支持的传输类型
+
+| 传输方式 | 工厂方法 | 适用场景 |
+|---------|---------|---------|
+| **Stdio** | `MCPSession.stdio(cmd)` | 以子进程方式启动的本地 MCP 服务 |
+| **SSE** | `MCPSession.sse(url)` | 使用 Server-Sent Events 的远程 MCP 服务 |
+| **Streamable HTTP** | `MCPSession.streamable_http(url)` | 使用 HTTP 流式传输的远程 MCP 服务 |
+
+> **核心要点**：`MCPSession.list_tools()` 会内省 MCP 服务的工具 schema，动态构建出带有正确 `__name__`、`__doc__` 和 `__input_schema__` 的 Python 函数。传入 `Agent` 后，它们和你手写的函数表现完全一样。无需样板代码，无需手动处理 schema。
+
 ## 核心组件
 
 ### Agent 类
@@ -265,6 +326,30 @@ if __name__ == "__main__":
 - `compress()`: 压缩记忆，移除推理内容和工具调用记录
 - `save(file: str)`: 保存记忆到JSON文件
 - `load(file: str)`: 从JSON文件加载记忆（类方法）
+
+### MCPSession 类
+
+MCP 会话管理器，负责连接 MCP 服务并将其工具暴露为 Python 函数。
+
+**工厂方法：**
+- `MCPSession.stdio(cmd: str)`：通过子进程标准输入输出连接
+- `MCPSession.sse(sse_url: str, client: AsyncClient | None = None)`：通过 SSE 连接
+- `MCPSession.streamable_http(url: str, client: AsyncClient | None = None)`：通过 Streamable HTTP 连接
+
+**主要方法：**
+- `list_tools() -> list[Callable[..., Awaitable]]`：获取 MCP 服务的工具列表，返回可调用的异步函数。每个函数都有正确的 `__name__`、`__doc__` 和输入 schema — 可直接传给 `Agent(tools=...)`。
+
+**支持异步上下文管理器：**
+```python
+async with MCPSession.stdio("some-command") as session:
+    tools = await session.list_tools()
+```
+
+### Transport 传输类
+
+- `SSETransport(sse_url, client)`：基于 SSE 的 MCP 传输
+- `StdioTransport(cmd)`：基于子进程标准输入输出的本地 MCP 传输
+- `StreamableHttpTransport(url, client)`：基于 HTTP 流式传输的远程 MCP 传输
 
 ### 异常类
 
