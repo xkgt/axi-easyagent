@@ -76,7 +76,7 @@ def _python_type_to_json_type(python_type):
         return "string"  # 默认返回 string
 
 
-def warp_function(
+def wrap_function(
     func,
     name: str,
     desc: str,

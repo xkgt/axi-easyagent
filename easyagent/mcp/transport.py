@@ -51,7 +51,6 @@ class SSETransport(Transport):
         return (
             self._listen_task is not None
             and not self._listen_task.done()
-            and not self._listen_task.cancelled()
         )
 
     async def send(self, payload: dict):
@@ -101,7 +100,7 @@ class StdioTransport(Transport):
 
     def is_alive(self) -> bool:
         # 进程存在且 returncode 为 None 表示进程还在运行
-        return self.proc is not None and self.proc.returncode is None
+        return self.proc is not None and self.proc.returncode is None and not self._read_task.done()
 
     async def _read_loop(self):
         try:
@@ -109,8 +108,8 @@ class StdioTransport(Transport):
                 line = await self.proc.stdout.readline()
                 if not line: break
                 await self.on_message(json.loads(line.decode()))
-        except (asyncio.CancelledError, Exception):
-            pass
+        except asyncio.CancelledError:  # 仅处理取消异常，其他异常抛出来
+            ...
 
     async def send(self, payload: dict):
         self.proc.stdin.write((json.dumps(payload) + "\n").encode())
@@ -180,8 +179,6 @@ class StreamableHttpTransport(Transport):
             elif "application/json" in content_type:
                 # 处理 JSON 响应 - 需要先读取内容
                 content = await response.aread()
-                print(payload)
-                print(content)
                 data = json.loads(content.decode("utf-8"))
                 await self.on_message(data)
 

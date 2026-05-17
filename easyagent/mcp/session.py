@@ -6,7 +6,7 @@ from typing import overload, Callable, Awaitable, Any
 from httpx import AsyncClient
 
 from easyagent.mcp.transport import Transport, SSETransport, StdioTransport, StreamableHttpTransport
-from easyagent.util import warp_function
+from easyagent.util import wrap_function
 
 
 class MCPSession:
@@ -39,7 +39,8 @@ class MCPSession:
         try:
             await self.transport.send(payload)
         except Exception as e:
-            del self._futures[id_]
+            if not notification:
+                del self._futures[id_]
             raise e
         if not notification:
             try:
@@ -56,7 +57,7 @@ class MCPSession:
             def create_tool(_schema):
                 async def e(**kwargs):
                     return (await self.post("tools/call", {"name": _schema["name"], "arguments": kwargs}))["content"]
-                func = warp_function(e, schema["name"], schema["description"], schema["inputSchema"])
+                func = wrap_function(e, schema["name"], schema["description"], schema["inputSchema"])
                 return func
 
             func = create_tool(schema)
@@ -76,12 +77,13 @@ class MCPSession:
         await self.post("notifications/initialized", {}, notification=True)
 
     async def _process(self, msg: dict):
+        msg_id = msg.get("id", None)
         if "error" in msg:
-            if msg.get("id", None) is not None:
+            if msg_id in self._futures:  # None不可能在_future，所以也可以同时排除没有id key的情况
                 self._futures[msg["id"]].set_exception(RuntimeError(msg))
             else:
                 raise RuntimeError(msg)
-        elif msg.get("id", None) is not None:
+        elif msg_id in self._futures:
             self._futures[msg["id"]].set_result(msg["result"])
 
     async def __aenter__(self):
