@@ -84,7 +84,7 @@ class Agent:
         :param api_key: OpenAI API 的密钥，如果为空则从环境变量中获取OPENAI_API_KEY，值可空
         :param memory: 记忆对象
         :param prompt: 系统提示
-        :param client: HTTP 客户端，需要提前将base_url和headers设置好
+        :param client: HTTP 客户端，需要提前将headers设置好，包含api_key
         :param tools: 工具列表，可以是一个函数，会自动包装成工具，并自动调用，也可以是一个字典，用于定义模型内置工具
         :param other_params: 请求中的json其他参数
         :param max_tool_call: 工具调用次数限制
@@ -95,10 +95,10 @@ class Agent:
         else:
             headers = {}
         self.client = client or httpx.AsyncClient(
-            base_url=base_url or os.environ["OPENAI_BASE_URL"],
             headers=headers,
             timeout=10
         )
+        self.base_url = base_url or os.environ['OPENAI_BASE_URL']
         self.model = model
         self.memory = memory if memory is not None else Memory()
         self.other_params = other_params if other_params is not None else {}
@@ -153,7 +153,7 @@ class Agent:
         reasoning_output = ""
         used_tools: list[dict] = []
         payload["messages"] = context.get_messages()
-        async with aconnect_sse(self.client, "POST", f"/chat/completions", json=payload) as event_source:
+        async with aconnect_sse(self.client, "POST", f"{self.base_url}/chat/completions", json=payload) as event_source:
             # 检查一下，如果不是sse协议就直接读取异常信息，否则下面就读不到了
             if "text/event-stream" not in event_source.response.headers.get("content-type", "").partition(";")[0]:
                 err = (await event_source.response.aread()).decode()
