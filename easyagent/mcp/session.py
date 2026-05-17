@@ -41,7 +41,7 @@ class MCPSession:
         except Exception as e:
             if not notification:
                 del self._futures[id_]
-            raise e
+            raise
         if not notification:
             try:
                 return await asyncio.wait_for(self._futures[id_], timeout=self.timeout)
@@ -93,7 +93,7 @@ class MCPSession:
             return self
         except Exception as e:
             await self.transport.__aexit__(None, None, None)
-            raise e
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.transport.__aexit__(exc_type, exc_val, exc_tb)

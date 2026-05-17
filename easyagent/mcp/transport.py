@@ -74,7 +74,7 @@ class SSETransport(Transport):
             # 如果发生非取消类的异常，任务会结束，is_alive 将返回 False
             if not self.message_url_future.done():
                 self.message_url_future.set_exception(e)
-            raise e
+            raise
 
     async def __aenter__(self):
         self._listen_task = asyncio.create_task(self._listen())
