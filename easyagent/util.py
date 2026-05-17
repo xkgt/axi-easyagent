@@ -1,47 +1,47 @@
 import inspect
-from typing import get_type_hints, get_origin, Callable
+from typing import get_origin, Callable
 
 
 def build_tool(func: Callable):
-    """将函数包装成 OpenAI API 的 tool 参数格式"""
-    sig = inspect.signature(func)
-    type_hints = get_type_hints(func)
+    """将函数转换为 OpenAI tool schema"""
 
-    # 获取函数描述
     doc = inspect.getdoc(func) or ""
 
-    # 构建参数 schema
+    # ======================================================
+    # 1. 优先使用 warp_function 注入的 schema（推荐路径）
+    # ======================================================
+    if hasattr(func, "__input_schema__"):
+        schema = func.__input_schema__
+
+        return {
+            "type": "function",
+            "function": {
+                "name": func.__name__,
+                "description": doc,
+                "parameters": schema,  # 已经是完整 JSON Schema
+            }
+        }
+
+    # ======================================================
+    # 2. fallback：没有 schema 才解析 signature
+    # ======================================================
+    sig = inspect.signature(func)
+
     properties = {}
     required = []
 
-    for param_name, param in sig.parameters.items():
-        # 从 signature 直接获取注解，保留 Annotated 信息
-        param_annotation = param.annotation
-        
-        # 处理 Annotated 类型
-        if hasattr(param_annotation, '__metadata__'):
-            # Annotated[type, "description"]
-            actual_type = param_annotation.__args__[0]
-            description = param_annotation.__metadata__[0] if param_annotation.__metadata__ else ""
-        else:
-            actual_type = param_annotation
-            description = ""
+    for name, param in sig.parameters.items():
+        annotation = param.annotation
 
-        # 转换 Python 类型为 JSON Schema 类型
-        json_type = _python_type_to_json_type(actual_type)
+        # fallback 类型处理
+        json_type = _python_type_to_json_type(annotation)
 
-        properties[param_name] = {
-            "type": json_type
-        }
-        if description:
-            properties[param_name]["description"] = description
+        properties[name] = {"type": json_type}
 
-        # 如果没有默认值，则为必需参数
         if param.default == inspect.Parameter.empty:
-            required.append(param_name)
+            required.append(name)
 
-    # 构建 tool 结构
-    tool = {
+    return {
         "type": "function",
         "function": {
             "name": func.__name__,
@@ -49,12 +49,10 @@ def build_tool(func: Callable):
             "parameters": {
                 "type": "object",
                 "properties": properties,
-                "required": required
+                "required": required,
             }
         }
     }
-
-    return tool
 
 
 def _python_type_to_json_type(python_type):
@@ -76,3 +74,28 @@ def _python_type_to_json_type(python_type):
         return "object"
     else:
         return "string"  # 默认返回 string
+
+
+def warp_function(
+    func,
+    name: str,
+    desc: str,
+    argument_schema: dict,
+):
+    """
+    MCP Tool Function Wrapper
+
+    只做三件事：
+    1. 设置函数名
+    2. 设置函数描述
+    3. 挂载原始 JSON Schema（供 AI / runtime 使用）
+    """
+
+    # --- 基础元信息 ---
+    func.__name__ = name
+    func.__doc__ = desc
+
+    # --- 核心：保存完整 schema ---
+    func.__input_schema__ = argument_schema
+
+    return func
