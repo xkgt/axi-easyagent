@@ -1,5 +1,5 @@
 import inspect
-from typing import get_origin, Callable
+from typing import get_origin, Callable, Any, Annotated
 
 
 def build_tool(func: Callable):
@@ -76,12 +76,7 @@ def _python_type_to_json_type(python_type):
         return "string"  # 默认返回 string
 
 
-def wrap_function(
-    func,
-    name: str,
-    desc: str,
-    argument_schema: dict,
-):
+def wrap_function(func, name: str, desc: str, argument_schema: dict):
     """
     MCP Tool Function Wrapper
 
@@ -89,13 +84,32 @@ def wrap_function(
     1. 设置函数名
     2. 设置函数描述
     3. 挂载原始 JSON Schema（供 AI / runtime 使用）
+    4. 设置函数签名（仅用于开发者审阅，不会传递给 AI）
     """
-
-    # --- 基础元信息 ---
     func.__name__ = name
     func.__doc__ = desc
-
-    # --- 核心：保存完整 schema ---
     func.__input_schema__ = argument_schema
 
+    properties = argument_schema.get("properties", {})
+    required_set = set(argument_schema.get("required", []))
+
+    required_params = []
+    optional_params = []
+    for key, prop in properties.items():
+        description = prop.get("description", "")
+        annotation = Annotated[Any, description]
+
+        param = inspect.Parameter(
+            name=key,
+            kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=annotation,
+            default=inspect.Parameter.empty if key in required_set else None,
+        )
+
+        if key in required_set:
+            required_params.append(param)
+        else:
+            optional_params.append(param)
+    params = required_params + optional_params
+    func.__signature__ = inspect.Signature(params)
     return func
